@@ -238,6 +238,64 @@ func validateRequestRouterCapability(descriptor *pluginv1.CapabilityDescriptor) 
 	if descriptor.GetType() != capability.RequestRouter && descriptor.GetRequestRouter() != nil {
 		return fmt.Errorf("plugin capability %q: request_router descriptor requires type %q", descriptor.GetId(), capability.RequestRouter)
 	}
+	if err := ValidateRequestRouterWording(descriptor.GetRequestRouter().GetWording()); err != nil {
+		return fmt.Errorf("plugin capability %q: %w", descriptor.GetId(), err)
+	}
+	return nil
+}
+
+// Limits on RequestRouterWording values, in characters.
+const (
+	MaxRequestWordingLabelRunes  = 24
+	MaxRequestWordingDetailRunes = 140
+)
+
+// ValidateRequestRouterWording checks that every wording value is a single
+// line within its limit, with no leading or trailing whitespace. An absent
+// wording is valid. Hosts may call it on stored descriptors and fall back to
+// their own words when it fails.
+func ValidateRequestRouterWording(wording *pluginv1.RequestRouterWording) error {
+	if wording == nil {
+		return nil
+	}
+	if err := validateWordingValue("step", wording.GetStep(), MaxRequestWordingLabelRunes); err != nil {
+		return err
+	}
+	if err := validateStatusWording("queued.", wording.GetQueued()); err != nil {
+		return err
+	}
+	return validateStatusWording("downloading.", wording.GetDownloading())
+}
+
+// ValidateRequestStatusWording checks one status's wording against the same
+// rules as ValidateRequestRouterWording. Hosts call it on the wording a
+// plugin reports for a target and drop wording that fails.
+func ValidateRequestStatusWording(wording *pluginv1.RequestStatusWording) error {
+	return validateStatusWording("", wording)
+}
+
+func validateStatusWording(prefix string, wording *pluginv1.RequestStatusWording) error {
+	if err := validateWordingValue(prefix+"label", wording.GetLabel(), MaxRequestWordingLabelRunes); err != nil {
+		return err
+	}
+	return validateWordingValue(prefix+"detail", wording.GetDetail(), MaxRequestWordingDetailRunes)
+}
+
+func validateWordingValue(name, value string, limit int) error {
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("request_router wording %s must not have leading or trailing whitespace", name)
+	}
+	if utf8.RuneCountInString(value) > limit {
+		return fmt.Errorf("request_router wording %s exceeds %d characters", name, limit)
+	}
+	if hasDisallowedControl(value, false) {
+		return fmt.Errorf("request_router wording %s contains control characters", name)
+	}
+	// Unicode line and paragraph separators break a line without being
+	// control characters.
+	if strings.ContainsFunc(value, func(r rune) bool { return unicode.In(r, unicode.Zl, unicode.Zp) }) {
+		return fmt.Errorf("request_router wording %s must be a single line", name)
+	}
 	return nil
 }
 
