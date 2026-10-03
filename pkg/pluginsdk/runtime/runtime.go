@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"sync"
 
 	"github.com/hashicorp/go-hclog"
@@ -92,12 +93,14 @@ func DefaultPluginSetWithWatchSyncDeviceAuthorization(
 type optionalServices struct {
 	watchSyncDeviceAuthorization pluginv1.WatchSyncDeviceAuthorizationServiceServer
 	authProviderChecks           pluginv1.AuthProviderChecksServer
+	networkIdentityAuth          pluginv1.NetworkIdentityAuthServer
 }
 
 func pluginSetWithOptionalServices(servers CapabilityServers, optional optionalServices) plugin.PluginSet {
 	// Compare fields one by one: == on the struct would panic for a server
 	// whose dynamic type is not comparable.
-	if optional.watchSyncDeviceAuthorization == nil && optional.authProviderChecks == nil {
+	if optional.watchSyncDeviceAuthorization == nil && optional.authProviderChecks == nil &&
+		optional.networkIdentityAuth == nil {
 		return DefaultPluginSet(servers)
 	}
 	return plugin.PluginSet{
@@ -170,6 +173,13 @@ func (c *Client) AuthProviderChecks() pluginv1.AuthProviderChecksClient {
 	return pluginv1.NewAuthProviderChecksClient(c.conn)
 }
 
+// NetworkIdentityAuth returns the client for overlay-peer sign-in, added in
+// v0.23.0. Plugins that do not declare the "network" auth mode answer
+// Unimplemented.
+func (c *Client) NetworkIdentityAuth() pluginv1.NetworkIdentityAuthClient {
+	return pluginv1.NewNetworkIdentityAuthClient(c.conn)
+}
+
 func (c *Client) HttpRoutes() pluginv1.HttpRoutesClient {
 	return pluginv1.NewHttpRoutesClient(c.conn)
 }
@@ -200,7 +210,7 @@ func (p *grpcPluginWithOptionalServices) GRPCServer(
 	broker *plugin.GRPCBroker,
 	server *grpc.Server,
 ) error {
-	if err := p.registerServers(broker, server, p.optional.authProviderChecks); err != nil {
+	if err := p.registerServers(broker, server, p.optional); err != nil {
 		return err
 	}
 	if p.optional.watchSyncDeviceAuthorization != nil {
@@ -210,29 +220,36 @@ func (p *grpcPluginWithOptionalServices) GRPCServer(
 }
 
 func (p *GRPCPlugin) GRPCServer(broker *plugin.GRPCBroker, server *grpc.Server) error {
-	return p.registerServers(broker, server, nil)
+	return p.registerServers(broker, server, optionalServices{})
 }
 
-// resolveAuthProviderChecks returns the AuthProviderChecks server to register:
-// the explicit one from WithAuthProviderChecks, else the AuthProvider server
-// when it also implements AuthProviderChecksServer, else nil.
-func resolveAuthProviderChecks(
-	authProvider pluginv1.AuthProviderServer,
-	explicit pluginv1.AuthProviderChecksServer,
-) pluginv1.AuthProviderChecksServer {
-	if explicit != nil {
+// resolveAuthService returns the server to register for an auth service kept
+// out of AuthProviderServer, such as AuthProviderChecks or
+// NetworkIdentityAuth: the explicit one from its ServeManifest option, else
+// the AuthProvider server when it also implements the service, else nil. A
+// nil pointer passed to the option counts as no server, so the startup checks
+// in manifestServeConfig catch it instead of the first call panicking.
+func resolveAuthService[S any](authProvider pluginv1.AuthProviderServer, explicit S) S {
+	if !isNilServer(explicit) {
 		return explicit
 	}
-	if checks, ok := authProvider.(pluginv1.AuthProviderChecksServer); ok {
-		return checks
+	if server, ok := authProvider.(S); ok {
+		return server
 	}
-	return nil
+	var none S
+	return none
+}
+
+// isNilServer reports whether server is nil or a nil pointer.
+func isNilServer(server any) bool {
+	value := reflect.ValueOf(server)
+	return !value.IsValid() || value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 func (p *GRPCPlugin) registerServers(
 	broker *plugin.GRPCBroker,
 	server *grpc.Server,
-	authProviderChecks pluginv1.AuthProviderChecksServer,
+	optional optionalServices,
 ) error {
 	pluginHost.setBroker(broker)
 	if p.Servers.Runtime == nil {
@@ -269,8 +286,11 @@ func (p *GRPCPlugin) registerServers(
 	}
 	// AuthProviderChecks lives in its own service so the released
 	// AuthProviderServer interface stays unchanged.
-	if checks := resolveAuthProviderChecks(p.Servers.AuthProvider, authProviderChecks); checks != nil {
+	if checks := resolveAuthService(p.Servers.AuthProvider, optional.authProviderChecks); checks != nil {
 		pluginv1.RegisterAuthProviderChecksServer(server, checks)
+	}
+	if network := resolveAuthService(p.Servers.AuthProvider, optional.networkIdentityAuth); network != nil {
+		pluginv1.RegisterNetworkIdentityAuthServer(server, network)
 	}
 	if p.Servers.HttpRoutes != nil {
 		pluginv1.RegisterHttpRoutesServer(server, p.Servers.HttpRoutes)
