@@ -2,7 +2,8 @@
 // Autoscan. Another tool appends changed paths to a change-log file, one per
 // line; each poll returns the lines added since the previous poll.
 //
-// The marker is the number of lines already consumed. The host stores it
+// The marker is the byte offset just past the last complete line reported, so
+// each poll reads only what was appended. The host stores it
 // verbatim and sends it back on the next poll, so the plugin keeps no state of
 // its own.
 package main
@@ -15,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	goruntime "runtime"
 	"strconv"
@@ -52,28 +54,40 @@ func (scanSourceServer) PollChanges(_ context.Context, req *pluginv1.PollChanges
 		// activity log, and keeps the marker, so write it for the operator.
 		return nil, fmt.Errorf("%s is not configured", changesFileKey)
 	}
-	lines, err := readLines(path)
+	// The marker is the byte offset just past the last complete line already
+	// reported, so each poll reads only what was appended since.
+	if req.GetMarker() == "" {
+		// First poll for the source: start from now and do not replay what
+		// the file already holds.
+		end, err := completeLinesEnd(path, 0)
+		if err != nil {
+			return nil, err
+		}
+		return &pluginv1.PollChangesResponse{NextMarker: strconv.FormatInt(end, 10)}, nil
+	}
+	offset, err := strconv.ParseInt(req.GetMarker(), 10, 64)
+	size, statErr := fileSize(path)
+	if statErr != nil {
+		return nil, statErr
+	}
+	if err != nil || offset < 0 || offset > size {
+		// The file was truncated or rotated, or the marker is not ours.
+		// Resynchronize to the end instead of replaying the whole file.
+		end, err := completeLinesEnd(path, 0)
+		if err != nil {
+			return nil, err
+		}
+		return &pluginv1.PollChangesResponse{NextMarker: strconv.FormatInt(end, 10)}, nil
+	}
+
+	lines, next, err := readAppended(path, offset)
 	if err != nil {
 		return nil, err
 	}
-
 	// Always return a non-empty marker. An empty next_marker is stored as "no
 	// marker", which makes the next poll look like a first poll again.
-	resp := &pluginv1.PollChangesResponse{NextMarker: strconv.Itoa(len(lines))}
-
-	// An empty marker means this is the first poll for the source: start from
-	// now and do not replay what the file already holds.
-	if req.GetMarker() == "" {
-		return resp, nil
-	}
-	consumed, err := strconv.Atoi(req.GetMarker())
-	if err != nil || consumed < 0 || consumed > len(lines) {
-		// The file was truncated or rotated, or the marker is not ours.
-		// Resynchronize to the end instead of replaying the whole file.
-		return resp, nil
-	}
-
-	for _, line := range lines[consumed:] {
+	resp := &pluginv1.PollChangesResponse{NextMarker: strconv.FormatInt(next, 10)}
+	for _, line := range lines {
 		resp.Changes = append(resp.Changes, changeFor(line))
 	}
 	return resp, nil
@@ -96,29 +110,58 @@ func changeFor(line string) *pluginv1.ScanSourceChange {
 	}
 }
 
-// readLines returns the non-blank lines of the change log. A missing file is
-// an empty log, so a source can be created before the other tool first writes.
-func readLines(path string) ([]string, error) {
-	f, err := os.Open(path)
+// fileSize returns the change log's size. A missing file is an empty log, so a
+// source can be created before the other tool first writes.
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("open change log: %w", err)
+		return 0, fmt.Errorf("stat change log: %w", err)
+	}
+	return info.Size(), nil
+}
+
+// readAppended returns the non-blank complete lines written after offset and
+// the offset just past the last of them. A line still being written (no
+// trailing newline yet) is left for the next poll.
+func readAppended(path string, offset int64) ([]string, int64, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, offset, fmt.Errorf("open change log: %w", err)
 	}
 	defer func() { _ = f.Close() }() // read-only; a close error cannot lose data
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, offset, fmt.Errorf("seek change log: %w", err)
+	}
 
 	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		if line := strings.TrimSpace(scanner.Text()); line != "" {
+	next := offset
+	reader := bufio.NewReader(f)
+	for {
+		raw, err := reader.ReadString('\n')
+		if err == io.EOF {
+			return lines, next, nil // raw, if any, is an unfinished line
+		}
+		if err != nil {
+			return nil, offset, fmt.Errorf("read change log: %w", err)
+		}
+		next += int64(len(raw))
+		if line := strings.TrimSpace(raw); line != "" {
 			lines = append(lines, line)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read change log: %w", err)
-	}
-	return lines, nil
+}
+
+// completeLinesEnd returns the offset just past the last complete line at or
+// after offset: where reading resumes when a poll starts from now.
+func completeLinesEnd(path string, offset int64) (int64, error) {
+	_, end, err := readAppended(path, offset)
+	return end, err
 }
 
 func main() {

@@ -10,9 +10,11 @@ It demonstrates:
 - a setup descriptor in `metadata.scan_source` with one per-source setting
   (`changes_file`) that the Add-source flow renders as a text field
 - reading that setting from `source_config` on every `PollChanges`
-- marker handling: an empty marker starts from now, the marker is the number
-  of lines consumed, and a marker past the end of the file (truncated or
-  rotated log) resynchronizes instead of replaying the file
+- marker handling: an empty marker starts from now, the marker is the byte
+  offset just past the last complete line reported (so each poll reads only
+  what was appended), a line still being written waits for the next poll, and
+  a marker past the end of the file (truncated or rotated log) resynchronizes
+  instead of replaying the file
 - structured `changes`: a line ending in `/` is a `SUBTREE` change, anything
   else is a `FILE` change
 

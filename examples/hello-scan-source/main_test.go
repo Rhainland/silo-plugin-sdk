@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -36,29 +37,40 @@ func writeLog(t *testing.T, path string, lines ...string) {
 	}
 }
 
+// offset returns the marker for the end of the given complete lines.
+func offset(lines ...string) string {
+	n := 0
+	for _, line := range lines {
+		n += len(line) + 1
+	}
+	return strconv.Itoa(n)
+}
+
 func TestPollChangesFirstPollStartsFromNow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "changes.log")
-	writeLog(t, path, "/media/movies/Old (2001)/Old.mkv", "/media/movies/Older (1999)/Older.mkv")
+	old := []string{"/media/movies/Old (2001)/Old.mkv", "/media/movies/Older (1999)/Older.mkv"}
+	writeLog(t, path, old...)
 
 	resp := poll(t, path, "")
 	if len(resp.GetChanges()) != 0 {
 		t.Fatalf("first poll replayed %d changes, want none", len(resp.GetChanges()))
 	}
-	if got := resp.GetNextMarker(); got != "2" {
-		t.Fatalf("next_marker = %q, want %q", got, "2")
+	if got, want := resp.GetNextMarker(), offset(old...); got != want {
+		t.Fatalf("next_marker = %q, want %q", got, want)
 	}
 }
 
 func TestPollChangesReturnsLinesSinceMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "changes.log")
-	writeLog(t, path,
+	lines := []string{
 		"/media/movies/Old (2001)/Old.mkv",
 		"",
 		"/media/movies/New (2024)/New.mkv",
 		"/media/tv/Gone Show/",
-	)
+	}
+	writeLog(t, path, lines...)
 
-	resp := poll(t, path, "1")
+	resp := poll(t, path, offset(lines[0]))
 	want := []*pluginv1.ScanSourceChange{
 		{SourcePath: "/media/movies/New (2024)/New.mkv", Scope: scopeFile},
 		{SourcePath: "/media/tv/Gone Show", Scope: scopeSubtree},
@@ -73,30 +85,62 @@ func TestPollChangesReturnsLinesSinceMarker(t *testing.T) {
 				got[i].GetSourcePath(), got[i].GetScope(), want[i].GetSourcePath(), want[i].GetScope())
 		}
 	}
-	if got := resp.GetNextMarker(); got != "3" {
-		t.Fatalf("next_marker = %q, want %q", got, "3")
+	end := offset(lines...)
+	if got := resp.GetNextMarker(); got != end {
+		t.Fatalf("next_marker = %q, want %q", got, end)
 	}
 
 	// Polling again with the returned marker yields nothing new and keeps the
 	// position, so a held marker re-reads the same window.
 	again := poll(t, path, resp.GetNextMarker())
-	if len(again.GetChanges()) != 0 || again.GetNextMarker() != "3" {
+	if len(again.GetChanges()) != 0 || again.GetNextMarker() != end {
 		t.Fatalf("repeat poll = %d changes, marker %q; want 0 changes, marker %q",
-			len(again.GetChanges()), again.GetNextMarker(), "3")
+			len(again.GetChanges()), again.GetNextMarker(), end)
+	}
+}
+
+func TestPollChangesLeavesAnUnfinishedLineForTheNextPoll(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changes.log")
+	first := "/media/movies/A (2020)/A.mkv"
+	if err := os.WriteFile(path, []byte(first+"\n/media/movies/B (2021)/B"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := poll(t, path, "0")
+	if len(resp.GetChanges()) != 1 || resp.GetChanges()[0].GetSourcePath() != first {
+		t.Fatalf("changes = %v, want only the complete line", resp.GetChanges())
+	}
+	if got, want := resp.GetNextMarker(), offset(first); got != want {
+		t.Fatalf("next_marker = %q, want %q (before the unfinished line)", got, want)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(".mkv\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	next := poll(t, path, resp.GetNextMarker())
+	if len(next.GetChanges()) != 1 || next.GetChanges()[0].GetSourcePath() != "/media/movies/B (2021)/B.mkv" {
+		t.Fatalf("changes = %v, want the finished line", next.GetChanges())
 	}
 }
 
 func TestPollChangesResyncsAfterTruncationOrForeignMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "changes.log")
-	writeLog(t, path, "/media/movies/A (2020)/A.mkv")
+	line := "/media/movies/A (2020)/A.mkv"
+	writeLog(t, path, line)
 
-	for _, marker := range []string{"10", "-1", "not-a-number"} {
+	for _, marker := range []string{"1000", "-1", "not-a-number"} {
 		resp := poll(t, path, marker)
 		if len(resp.GetChanges()) != 0 {
 			t.Fatalf("marker %q replayed %d changes, want none", marker, len(resp.GetChanges()))
 		}
-		if got := resp.GetNextMarker(); got != "1" {
-			t.Fatalf("marker %q: next_marker = %q, want %q", marker, got, "1")
+		if got, want := resp.GetNextMarker(), offset(line); got != want {
+			t.Fatalf("marker %q: next_marker = %q, want %q", marker, got, want)
 		}
 	}
 }
