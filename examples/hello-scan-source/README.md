@@ -14,7 +14,10 @@ It demonstrates:
   offset just past the last complete line reported (so each poll reads only
   what was appended), a line still being written waits for the next poll, and
   a marker past the end of the file (truncated or rotated log) resynchronizes
-  instead of replaying the file
+  instead of replaying the file. The example cannot tell a log that was replaced by a
+  different, longer file from one that grew; to rotate it, truncate it or start
+  the new file empty. A production plugin should put a file identity (such as
+  the inode) or a check of the bytes before the offset into the marker
 - structured `changes`: a line ending in `/` is a `SUBTREE` change, anything
   else is a `FILE` change
 
