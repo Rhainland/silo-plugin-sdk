@@ -129,12 +129,12 @@ func TestPollChangesLeavesAnUnfinishedLineForTheNextPoll(t *testing.T) {
 	}
 }
 
-func TestPollChangesResyncsAfterTruncationOrForeignMarker(t *testing.T) {
+func TestPollChangesResyncsAfterForeignMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "changes.log")
 	line := "/media/movies/A (2020)/A.mkv"
 	writeLog(t, path, line)
 
-	for _, marker := range []string{"1000", "-1", "not-a-number"} {
+	for _, marker := range []string{"-1", "not-a-number"} {
 		resp := poll(t, path, marker)
 		if len(resp.GetChanges()) != 0 {
 			t.Fatalf("marker %q replayed %d changes, want none", marker, len(resp.GetChanges()))
@@ -145,13 +145,73 @@ func TestPollChangesResyncsAfterTruncationOrForeignMarker(t *testing.T) {
 	}
 }
 
-func TestPollChangesMissingFileIsEmptyLog(t *testing.T) {
-	resp := poll(t, filepath.Join(t.TempDir(), "absent.log"), "")
-	if len(resp.GetChanges()) != 0 {
-		t.Fatalf("got %d changes, want none", len(resp.GetChanges()))
+func TestPollChangesReadsATruncatedLogFromTheStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changes.log")
+	old := []string{"/media/movies/Old (2001)/Old.mkv", "/media/movies/Older (1999)/Older.mkv"}
+	writeLog(t, path, old...)
+	marker := poll(t, path, "").GetNextMarker()
+
+	// Truncate the log, as the README suggests for rotation, then append one
+	// line before the next poll.
+	added := "/media/movies/New (2024)/New.mkv"
+	writeLog(t, path, added)
+
+	resp := poll(t, path, marker)
+	if len(resp.GetChanges()) != 1 || resp.GetChanges()[0].GetSourcePath() != added {
+		t.Fatalf("changes = %v, want only %q", resp.GetChanges(), added)
 	}
-	if got := resp.GetNextMarker(); got != "0" {
-		t.Fatalf("next_marker = %q, want a non-empty %q", got, "0")
+	if got, want := resp.GetNextMarker(), offset(added); got != want {
+		t.Fatalf("next_marker = %q, want %q", got, want)
+	}
+}
+
+func TestPollChangesMissingFileIsEmptyLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent.log")
+	for _, marker := range []string{"", "0"} {
+		resp := poll(t, path, marker)
+		if len(resp.GetChanges()) != 0 {
+			t.Fatalf("marker %q: got %d changes, want none", marker, len(resp.GetChanges()))
+		}
+		if got := resp.GetNextMarker(); got != "0" {
+			t.Fatalf("marker %q: next_marker = %q, want a non-empty %q", marker, got, "0")
+		}
+	}
+
+	// Once the other tool writes, the next poll reports what it wrote.
+	line := "/media/movies/A (2020)/A.mkv"
+	writeLog(t, path, line)
+	resp := poll(t, path, "0")
+	if len(resp.GetChanges()) != 1 || resp.GetChanges()[0].GetSourcePath() != line {
+		t.Fatalf("changes = %v, want only %q", resp.GetChanges(), line)
+	}
+}
+
+func TestPollChangesFailsWhileALogItReadIsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changes.log")
+	lines := []string{"/media/movies/Old (2001)/Old.mkv", "/media/movies/Older (1999)/Older.mkv"}
+	writeLog(t, path, lines...)
+	marker := poll(t, path, "").GetNextMarker()
+
+	if err := os.Rename(path, path+".away"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := scanSourceServer{}.PollChanges(context.Background(), &pluginv1.PollChangesRequest{
+		Marker:       marker,
+		SourceConfig: map[string]string{changesFileKey: path},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("poll with the log missing = %v, want a not-found error", err)
+	}
+
+	// The host keeps the marker after an error. When the file returns, the
+	// next poll must not replay it.
+	if err := os.Rename(path+".away", path); err != nil {
+		t.Fatal(err)
+	}
+	resp := poll(t, path, marker)
+	if len(resp.GetChanges()) != 0 || resp.GetNextMarker() != marker {
+		t.Fatalf("poll after the log returned = %d changes, marker %q; want 0 changes, marker %q",
+			len(resp.GetChanges()), resp.GetNextMarker(), marker)
 	}
 }
 

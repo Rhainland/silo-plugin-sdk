@@ -56,28 +56,37 @@ func (scanSourceServer) PollChanges(_ context.Context, req *pluginv1.PollChanges
 	}
 	// The marker is the byte offset just past the last complete line already
 	// reported, so each poll reads only what was appended since.
-	if req.GetMarker() == "" {
+	marker := req.GetMarker()
+	size, err := fileSize(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if marker == "" || marker == "0" {
+			// Nothing has been written yet, so a source can be created before
+			// the other tool first writes. Read from the start once it does.
+			return &pluginv1.PollChangesResponse{NextMarker: "0"}, nil
+		}
+		// The log held lines at an earlier poll. Returning "0" now would
+		// replay all of them once the file is back, so fail instead: the host
+		// keeps the marker and records this message on the source.
+		return nil, fmt.Errorf("change log %s not found", path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if marker == "" {
 		// First poll for the source: start from now and do not replay what
 		// the file already holds.
-		end, err := completeLinesEnd(path, 0)
-		if err != nil {
-			return nil, err
-		}
-		return &pluginv1.PollChangesResponse{NextMarker: strconv.FormatInt(end, 10)}, nil
+		return resyncToEnd(path)
 	}
-	offset, err := strconv.ParseInt(req.GetMarker(), 10, 64)
-	size, statErr := fileSize(path)
-	if statErr != nil {
-		return nil, statErr
+	offset, err := strconv.ParseInt(marker, 10, 64)
+	if err != nil || offset < 0 {
+		// Not a marker this plugin wrote. Resynchronize to the end instead of
+		// replaying the whole file.
+		return resyncToEnd(path)
 	}
-	if err != nil || offset < 0 || offset > size {
-		// The file was truncated or rotated, or the marker is not ours.
-		// Resynchronize to the end instead of replaying the whole file.
-		end, err := completeLinesEnd(path, 0)
-		if err != nil {
-			return nil, err
-		}
-		return &pluginv1.PollChangesResponse{NextMarker: strconv.FormatInt(end, 10)}, nil
+	if offset > size {
+		// The log was truncated since the last poll, so every line it holds
+		// now was written after that. Read it from the start.
+		offset = 0
 	}
 
 	lines, next, err := readAppended(path, offset)
@@ -110,17 +119,24 @@ func changeFor(line string) *pluginv1.ScanSourceChange {
 	}
 }
 
-// fileSize returns the change log's size. A missing file is an empty log, so a
-// source can be created before the other tool first writes.
+// fileSize returns the change log's size. The error wraps os.ErrNotExist when
+// the file is missing.
 func fileSize(path string) (int64, error) {
 	info, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
 	if err != nil {
 		return 0, fmt.Errorf("stat change log: %w", err)
 	}
 	return info.Size(), nil
+}
+
+// resyncToEnd answers a poll with no changes and a marker at the end of the
+// last complete line, so the next poll reads only what is appended after now.
+func resyncToEnd(path string) (*pluginv1.PollChangesResponse, error) {
+	end, err := completeLinesEnd(path, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &pluginv1.PollChangesResponse{NextMarker: strconv.FormatInt(end, 10)}, nil
 }
 
 // readAppended returns the non-blank complete lines written after offset and
@@ -128,9 +144,6 @@ func fileSize(path string) (int64, error) {
 // trailing newline yet) is left for the next poll.
 func readAppended(path string, offset int64) ([]string, int64, error) {
 	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, 0, nil
-	}
 	if err != nil {
 		return nil, offset, fmt.Errorf("open change log: %w", err)
 	}

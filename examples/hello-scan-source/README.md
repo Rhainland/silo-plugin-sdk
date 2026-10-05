@@ -12,12 +12,15 @@ It demonstrates:
 - reading that setting from `source_config` on every `PollChanges`
 - marker handling: an empty marker starts from now, the marker is the byte
   offset just past the last complete line reported (so each poll reads only
-  what was appended), a line still being written waits for the next poll, and
-  a marker past the end of the file (truncated or rotated log) resynchronizes
-  instead of replaying the file. The example cannot tell a log that was replaced by a
-  different, longer file from one that grew; to rotate it, truncate it or start
-  the new file empty. A production plugin should put a file identity (such as
-  the inode) or a check of the bytes before the offset into the marker
+  what was appended), and a line still being written waits for the next poll.
+  A marker past the end of the file means the log was truncated, so the poll
+  reads the file from the start. A log that goes missing after the source has
+  read it fails the poll until it returns, so the host keeps the marker and
+  nothing is replayed. The example cannot tell a log that was replaced by a
+  different, longer file from one that grew; to rotate it, truncate it or
+  start the new file empty. A production plugin should put a file identity
+  (such as the inode) or a check of the bytes before the offset into the
+  marker
 - structured `changes`: a line ending in `/` is a `SUBTREE` change, anything
   else is a `FILE` change
 
@@ -63,4 +66,6 @@ go test ./examples/hello-scan-source
    scan it queued.
 
 The file must be readable from inside the Silo server's environment, such as
-its container.
+its container. With more than one Silo node, any node in `api` or
+`integrated` mode can run a poll, so the path must reach the same file on
+every one of them, for example on a shared mount.
