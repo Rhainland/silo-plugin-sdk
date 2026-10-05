@@ -64,8 +64,10 @@ under it (or `description` when there is no summary).
 
 Every descriptor key is optional. A capability with no `scan_source` block is
 treated as poll delivery with an optional connection and no config form. Silo
-reads the descriptor leniently: a value of the wrong type is ignored rather
-than rejected, so check the Add-source flow after you change it.
+reads the top-level descriptor keys leniently: a value of the wrong type is
+ignored rather than rejected. `config_form` is all or nothing: one field value
+of the wrong type (for example `"required": "true"`) drops the whole form.
+Check the Add-source flow after you change the descriptor.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -99,7 +101,9 @@ Silo drops two kinds of field from a source form:
 
 Fields can also set `fill_from` to `"library_paths_movie"` or
 `"library_paths_tv"`. The form then offers a button that fills the field with
-the paths of the operator's enabled movie or series libraries.
+the paths of the operator's enabled movie or series libraries, one per line.
+The value arrives in `source_config` as a newline-separated string, so split it
+on newlines, not commas.
 
 Put the form in `metadata.scan_source.config_form`. Silo also reads a
 capability `config_schema` entry with key `"scan_source"` as a fallback, but
@@ -196,7 +200,7 @@ Each change has a scope:
 
 | Scope | What Silo does with the rewritten path |
 |---|---|
-| `FILE` | Scans that path. A video file widens to a scan of its directory, which picks up replaced versions and rewritten sidecars, except directly at a library root, where only the file is scanned. Audiobook and ebook files stay exact. An existing directory is scanned as a subtree. A path that is a library root is dropped instead of becoming a full library scan. A media file that no longer exists is reconciled so its catalog row is marked missing, as long as the library root is still mounted. |
+| `FILE` | Scans that path. A video file widens to a scan of its directory, which picks up replaced versions and rewritten sidecars, except directly at a library root, where only the file is scanned. Audiobook, ebook, and manga files stay exact. In a podcast library, `FILE` changes are skipped, including for deleted files; report the directory as `SUBTREE` instead. An existing directory is scanned as a subtree. A path that is a library root is dropped instead of becoming a full library scan. A media file that no longer exists is reconciled so its catalog row is marked missing, as long as the library root is still mounted. |
 | `SUBTREE` | Queues a scan of that directory without first checking that it exists, for directory-level changes. The path must be below a library root; a library root itself is rejected. |
 | `AUTO` or unspecified | Scans the **parent directory** of the path. `/movies/Film (2020)/Film.mkv` scans `/movies/Film (2020)`. A directory without a trailing slash scans its parent: `/movies/Film (2020)` scans `/movies`, which is a full library scan when `/movies` is the library root. Add a trailing slash (`/movies/Film (2020)/`) to scan the directory itself. |
 
@@ -222,10 +226,12 @@ directory instead.
 3. Debounces repeats of an unchanged file: within the Autoscan debounce
    window (60 seconds by default), a report of a file whose size and
    modification time are the same as at its last report is skipped. A file
-   that changed, was deleted, or reappeared is always scanned. Directory
-   reports (including `SUBTREE` changes and directories reported as `AUTO`)
-   are never debounced; the scan queue merges them with a matching scan that
-   is waiting or running. The window is keyed on the reported path, after
+   that changed, was deleted, or reappeared is always scanned. Reports of an
+   existing directory (including `SUBTREE` changes and directories reported
+   as `AUTO`) are never debounced; the scan queue merges them with a matching
+   scan that is waiting or running. A reported path that no longer exists,
+   directory or file, is debounced like a deleted file: a repeat report
+   within the window is skipped. The window is keyed on the reported path, after
    rewrites. Changes in one poll that resolve to the same target are queued
    once.
 4. Queues the scans. If one poll produces more than 1,000 targets, Silo
@@ -242,8 +248,10 @@ directory instead.
   a value below the global interval has no effect.
 - A failed poll also counts as a run, so a failing source retries at its
   normal interval, not immediately.
-- Silo gives `PollChanges` up to five minutes and runs at most one poll per
-  source at a time. Bound your upstream calls well below that.
+- Silo normally gives `PollChanges` up to five minutes and avoids
+  overlapping polls of one source, but guarantees neither. Bound your
+  upstream calls well below five minutes, and keep polls free of side
+  effects so a repeated or overlapping poll is harmless.
 - The text of an error you return is stored on the source (up to 2 KiB) and
   shown in the activity log. Write it for the operator, such as
   `changes_file is not configured`, and leave secrets out of it.
@@ -278,7 +286,10 @@ directory instead.
 
 The plugin runs as a child process of the Silo server that polls, so any file,
 mount, or network address it reads must be reachable from that server's
-environment (inside its container, if it has one).
+environment (inside its container, if it has one). In a deployment with more
+than one Silo node, any node in `api` or `integrated` mode can run a poll, and
+consecutive polls of one source can run on different nodes. The path or address
+must resolve to the same data on every one of them.
 
 The Sonarr/Radarr-specific helpers in the connection step, **Test
 connection** and suggested path rewrites, call the Sonarr/Radarr API. They do
