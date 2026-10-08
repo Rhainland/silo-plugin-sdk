@@ -101,7 +101,8 @@ Silo drops two kinds of field from a source form:
 
 Fields can also set `fill_from` to `"library_paths_movie"` or
 `"library_paths_tv"`. The form then offers a button that fills the field with
-the paths of the operator's enabled movie or series libraries, one per line.
+the paths of the operator's enabled movie or series libraries (mixed
+libraries count as both), one per line.
 The value arrives in `source_config` as a newline-separated string, so split it
 on newlines, not commas.
 
@@ -135,9 +136,12 @@ message PollChangesRequest {
   a Requests integration's credentials, so the plugin never stores
   credentials. With no connection bound, both fields are empty. When the
   descriptor says `connection: "required"`, Silo will not save an enabled
-  source without one and does not call `PollChanges` for a source that has
-  none; it records "No server selected" on the source itself. With
-  `"optional"`, return an error if a poll needs a connection it did not get.
+  source without one and normally does not call `PollChanges` for a source
+  that has none; it records "No server selected" on the source itself. If
+  Silo cannot list the installed scan sources, the poll goes ahead with an
+  empty connection, so still return a clear error when a connection you
+  require is missing. With `"optional"`, return an error if a poll needs a
+  connection it did not get.
   Do not log the request without redacting the key.
 
 ## Markers
@@ -155,9 +159,18 @@ The marker is your continuation token. Silo never parses it.
 - **Make polls repeatable.** Silo keeps the old marker when a poll fails, so
   the same window is read again. Two polls with the same marker should return
   the same changes. Rescanning a path that was already handled is safe.
-- **Handle a marker you cannot use** (truncated log, expired cursor, a marker
-  from an older plugin version) by resynchronizing to the current position or
-  returning an error. Do not replay the whole history.
+- **Handle a marker you cannot use.** If the upstream can still give you
+  everything since the marker, read that: a truncated log holds only lines
+  written after the truncation, so read it from the start. Otherwise (an
+  expired cursor, a marker from an older plugin version) resynchronize to the
+  current position or return an error. Do not replay history from before the
+  marker.
+- **Expect the marker to be cleared.** Silo clears it when the operator
+  changes a source's connection or settings, or points a connection at a
+  different server, and discards a poll's new marker if one of those edits
+  lands while the poll runs. The next poll then arrives with an empty marker,
+  like a first poll. Edits to the label, enabled state, interval, or path
+  rewrites keep the marker.
 
 Silo advances the marker when the window's work is done:
 
@@ -173,8 +186,11 @@ Silo keeps the old marker and records the error on the source when:
 - the connection could not be resolved (the plugin is not called);
 - `PollChanges` returned an error or timed out;
 - matching any path failed with an internal error, even if other paths
-  matched. Scans already queued for the matched paths stay queued;
-- the scans could not be queued, or the new marker could not be saved.
+  matched. Scans already queued for the matched paths stay queued.
+
+Silo also keeps the old marker when the scans could not be queued or the new
+marker could not be saved. These two errors appear only in the activity log,
+not on the source, and the source polls again on the next cycle.
 
 ## Returning changes
 
@@ -246,21 +262,26 @@ directory instead.
 - One host task polls every source at the global poll interval (600 seconds
   by default). A per-source interval only makes that source poll less often:
   a value below the global interval has no effect.
-- A failed poll also counts as a run, so a failing source retries at its
-  normal interval, not immediately.
+- A failed poll usually counts as a run, so a failing source retries at its
+  normal interval, not immediately. If Silo fails to queue the scans or save
+  the marker, the source polls again on the next cycle.
 - Silo normally gives `PollChanges` up to five minutes and avoids
   overlapping polls of one source, but guarantees neither. Bound your
   upstream calls well below five minutes, and keep polls free of side
   effects so a repeated or overlapping poll is harmless.
 - The text of an error you return is stored on the source (up to 2 KiB) and
-  shown in the activity log. Write it for the operator, such as
-  `changes_file is not configured`, and leave secrets out of it.
+  shown in the activity log, with credential-looking text masked. Write it for
+  the operator, such as `changes_file is not configured`, and leave secrets
+  out of it. Do not use the gRPC code `Unavailable` for your own errors: Silo
+  shows it as "Plugin unavailable." because that is also what a crashed
+  plugin returns. A plain Go error is fine.
 - Silo polls a source only while its plugin is enabled. A disabled plugin's
   sources fail with an error and keep their markers.
 
 ## Install and try it
 
-1. Build for the platform the Silo server runs on, usually Linux:
+1. Build for the platform the Silo server runs on, usually Linux. For an
+   ARM server, use `GOARCH=arm64`:
 
    ```sh
    GOOS=linux GOARCH=amd64 go build -o hello-scan-source ./examples/hello-scan-source
