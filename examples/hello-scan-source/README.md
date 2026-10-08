@@ -13,14 +13,15 @@ It demonstrates:
 - marker handling: an empty marker starts from now, the marker is the byte
   offset just past the last complete line reported (so each poll reads only
   what was appended), and a line still being written waits for the next poll.
-  A marker past the end of the file means the log was truncated, so the poll
-  reads the file from the start. A log that goes missing after the source has
-  read it fails the poll until it returns, so the host keeps the marker and
-  nothing is replayed. The example cannot tell a log that was replaced by a
-  different, longer file from one that grew; to rotate it, truncate it or
-  start the new file empty. A production plugin should put a file identity
-  (such as the inode) or a check of the bytes before the offset into the
-  marker
+  A log that goes missing after the source has read it fails the poll until
+  it returns, so the host keeps the marker and nothing is replayed
+- rotation: to rotate the log, truncate it or start the new file empty. The
+  poll then reads the new log from the start when the marker is past its end
+  or no longer falls just after a newline. If the new log grows past the old
+  marker and a newline happens to sit there, the lines before it are missed.
+  The example also cannot tell a log replaced by a different, longer file
+  from one that grew. A production plugin should put a file identity (such as
+  the inode) or a check of the bytes before the offset into the marker
 - structured `changes`: a line ending in `/` is a `SUBTREE` change, anything
   else is a `FILE` change
 
@@ -28,7 +29,8 @@ See [docs/scan-source.md](../../docs/scan-source.md) for the full contract.
 
 ## Build
 
-Build for the platform your Silo server runs on, usually Linux:
+Build for the platform your Silo server runs on, usually Linux. For an ARM
+server, use `GOARCH=arm64`:
 
 ```sh
 GOOS=linux GOARCH=amd64 go build -o hello-scan-source ./examples/hello-scan-source

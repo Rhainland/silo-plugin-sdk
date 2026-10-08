@@ -165,6 +165,31 @@ func TestPollChangesReadsATruncatedLogFromTheStart(t *testing.T) {
 	}
 }
 
+func TestPollChangesReadsATruncatedLogThatGrewPastTheMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changes.log")
+	writeLog(t, path, "/media/movies/Old (2001)/Old.mkv")
+	marker := poll(t, path, "").GetNextMarker()
+
+	// Truncate the log, then append more than the old marker's length before
+	// the next poll, so the file is no shorter than it was.
+	added := []string{"/media/movies/New Movie (2025)/New Movie (2025).mkv", "/media/tv/Show/S01E01.mkv"}
+	writeLog(t, path, added...)
+
+	resp := poll(t, path, marker)
+	got := resp.GetChanges()
+	if len(got) != len(added) {
+		t.Fatalf("changes = %v, want %q", got, added)
+	}
+	for i := range added {
+		if got[i].GetSourcePath() != added[i] {
+			t.Fatalf("change %d = %q, want %q", i, got[i].GetSourcePath(), added[i])
+		}
+	}
+	if got, want := resp.GetNextMarker(), offset(added...); got != want {
+		t.Fatalf("next_marker = %q, want %q", got, want)
+	}
+}
+
 func TestPollChangesMissingFileIsEmptyLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent.log")
 	for _, marker := range []string{"", "0"} {

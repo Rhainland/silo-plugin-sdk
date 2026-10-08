@@ -10,6 +10,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -87,6 +88,17 @@ func (scanSourceServer) PollChanges(_ context.Context, req *pluginv1.PollChanges
 		// The log was truncated since the last poll, so every line it holds
 		// now was written after that. Read it from the start.
 		offset = 0
+	} else if offset > 0 {
+		// Every marker this plugin writes ends just past a newline. Any other
+		// byte there means the log was truncated and has since grown past the
+		// marker, so read it from the start too.
+		atLineStart, err := followsNewline(path, offset)
+		if err != nil {
+			return nil, err
+		}
+		if !atLineStart {
+			offset = 0
+		}
 	}
 
 	lines, next, err := readAppended(path, offset)
@@ -129,10 +141,24 @@ func fileSize(path string) (int64, error) {
 	return info.Size(), nil
 }
 
+// followsNewline reports whether the byte just before offset is a newline.
+func followsNewline(path string, offset int64) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("open change log: %w", err)
+	}
+	defer func() { _ = f.Close() }() // read-only; a close error cannot lose data
+	var b [1]byte
+	if _, err := f.ReadAt(b[:], offset-1); err != nil {
+		return false, fmt.Errorf("read change log: %w", err)
+	}
+	return b[0] == '\n', nil
+}
+
 // resyncToEnd answers a poll with no changes and a marker at the end of the
 // last complete line, so the next poll reads only what is appended after now.
 func resyncToEnd(path string) (*pluginv1.PollChangesResponse, error) {
-	end, err := completeLinesEnd(path, 0)
+	end, err := completeLinesEnd(path)
 	if err != nil {
 		return nil, err
 	}
@@ -170,11 +196,31 @@ func readAppended(path string, offset int64) ([]string, int64, error) {
 	}
 }
 
-// completeLinesEnd returns the offset just past the last complete line at or
-// after offset: where reading resumes when a poll starts from now.
-func completeLinesEnd(path string, offset int64) (int64, error) {
-	_, end, err := readAppended(path, offset)
-	return end, err
+// completeLinesEnd returns the offset just past the last complete line: where
+// reading resumes when a poll starts from now. It reads in blocks and keeps no
+// lines, so a large log costs one pass and a fixed buffer.
+func completeLinesEnd(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("open change log: %w", err)
+	}
+	defer func() { _ = f.Close() }() // read-only; a close error cannot lose data
+
+	var end, pos int64
+	buf := make([]byte, 64*1024)
+	for {
+		n, err := f.Read(buf)
+		if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			end = pos + int64(i) + 1
+		}
+		pos += int64(n)
+		if err == io.EOF {
+			return end, nil
+		}
+		if err != nil {
+			return 0, fmt.Errorf("read change log: %w", err)
+		}
+	}
 }
 
 func main() {
