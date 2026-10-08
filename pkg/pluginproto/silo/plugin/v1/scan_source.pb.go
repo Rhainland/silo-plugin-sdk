@@ -32,10 +32,12 @@ const (
 	// slash scans its parent, which can be a whole library scan; with a
 	// trailing slash it scans the directory itself.
 	ScanSourceChangeScope_SCAN_SOURCE_CHANGE_SCOPE_AUTO ScanSourceChangeScope = 1
-	// The path is a file. The host scans it; a video file widens to its
+	// The path is a media file. The host scans it; a video file widens to its
 	// directory except directly at a library root. An existing directory is
 	// scanned as a subtree, a library root is dropped, and a media file that no
-	// longer exists is marked missing while the library root is mounted.
+	// longer exists is marked missing while the library root is mounted. Other
+	// files (an .nfo, a subtitle) and every file in a podcast library are
+	// skipped.
 	ScanSourceChangeScope_SCAN_SOURCE_CHANGE_SCOPE_FILE ScanSourceChangeScope = 2
 	// The path is a directory below a library root. The host queues a scan of
 	// it without checking that it exists; a library root itself is rejected.
@@ -234,10 +236,11 @@ type PollChangesResponse struct {
 	NextMarker string `protobuf:"bytes,2,opt,name=next_marker,json=nextMarker,proto3" json:"next_marker,omitempty"`
 	// Structured changes are preferred over source_paths; when present the host
 	// ignores source_paths. Each change's scope tells the host whether its path
-	// is a file or a directory. A deleted file reported with
-	// SCAN_SOURCE_CHANGE_SCOPE_FILE is reconciled as missing. A scan of a
-	// directory that no longer exists leaves its catalog rows in place, so for a
-	// deleted, moved or renamed directory also report its parent directory.
+	// is a file or a directory. A deleted media file reported with
+	// SCAN_SOURCE_CHANGE_SCOPE_FILE is marked missing; that scope lists the
+	// exceptions. A scan of a directory that no longer exists leaves its catalog
+	// rows in place, so for a deleted, moved or renamed directory also report its
+	// parent directory.
 	// docs/scan-source.md in the plugin SDK describes the full behavior.
 	Changes       []*ScanSourceChange `protobuf:"bytes,3,rep,name=changes,proto3" json:"changes,omitempty"`
 	unknownFields protoimpl.UnknownFields
