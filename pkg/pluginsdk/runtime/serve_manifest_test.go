@@ -10,7 +10,9 @@ import (
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -406,5 +408,19 @@ func TestManifestServeConfigRejectsConfigurationCheckWithoutServer(t *testing.T)
 	}
 	if _, err := manifestServeConfig(configurationCheckManifest(false), CapabilityServers{}); err != nil {
 		t.Fatalf("manifestServeConfig without the declaration = %v, want nil", err)
+	}
+}
+
+// A typed-nil server counts as no server: it is not registered, so a call
+// answers Unimplemented instead of panicking on the nil receiver.
+func TestManifestServeConfigSkipsTypedNilConfigurationChecks(t *testing.T) {
+	cfg, err := manifestServeConfig(configurationCheckManifest(false), CapabilityServers{},
+		WithConfigurationChecks((*configurationChecker)(nil)))
+	if err != nil {
+		t.Fatalf("manifestServeConfig = %v", err)
+	}
+	_, err = serveConfigClient(t, cfg).ConfigurationChecks().TestConfiguration(context.Background(), &pluginv1.TestConfigurationRequest{})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("TestConfiguration error = %v, want Unimplemented", err)
 	}
 }

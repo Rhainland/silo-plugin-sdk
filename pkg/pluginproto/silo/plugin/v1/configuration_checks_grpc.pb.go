@@ -30,8 +30,9 @@ const (
 // operator presses Check Connection on the plugin's settings page. Any plugin
 // may serve it, whatever its capabilities. Advertise support with the
 // manifest metadata key "configuration_check": true and register the server
-// with runtime.WithConfigurationChecks; the SDK runtime refuses to start a
-// plugin that declares the key without a server.
+// with runtime.WithConfigurationChecks. runtime.ServeManifestWithOptions
+// refuses to start a plugin that declares the key without a server; a plugin
+// that calls runtime.Serve directly gets no such check.
 //
 // Hosts that predate this service, and plugins that do not declare it, keep
 // the host's built-in probes: a test search for a metadata provider and a
@@ -70,8 +71,9 @@ func (c *configurationChecksClient) TestConfiguration(ctx context.Context, in *T
 // operator presses Check Connection on the plugin's settings page. Any plugin
 // may serve it, whatever its capabilities. Advertise support with the
 // manifest metadata key "configuration_check": true and register the server
-// with runtime.WithConfigurationChecks; the SDK runtime refuses to start a
-// plugin that declares the key without a server.
+// with runtime.WithConfigurationChecks. runtime.ServeManifestWithOptions
+// refuses to start a plugin that declares the key without a server; a plugin
+// that calls runtime.Serve directly gets no such check.
 //
 // Hosts that predate this service, and plugins that do not declare it, keep
 // the host's built-in probes: a test search for a metadata provider and a

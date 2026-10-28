@@ -196,7 +196,12 @@ func manifestServeConfig(
 			}
 		}
 	}
-	if manifest.SupportsConfigurationCheck(m) && isNilServer(resolved.configurationChecks) {
+	// A typed-nil server counts as none, so it is neither registered nor
+	// accepted for the declaration.
+	if isNilServer(resolved.configurationChecks) {
+		resolved.configurationChecks = nil
+	}
+	if manifest.SupportsConfigurationCheck(m) && resolved.configurationChecks == nil {
 		return ServeConfig{}, fmt.Errorf("plugin manifest declares %q but no ConfigurationChecks server is registered; pass runtime.WithConfigurationChecks",
 			manifest.ConfigurationCheckKey)
 	}
