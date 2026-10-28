@@ -34,7 +34,8 @@ message TestConfigurationRequest {
 message TestConfigurationResponse {
   // True when the settings work.
   bool ok = 1;
-  // Operator-facing result, or why the check failed and what to change.
-  // Never include secrets.
+  // Why the check failed and what to change, shown to the operator when ok
+  // is false. Hosts show their own success text when ok is true. Never
+  // include secrets.
   string message = 2;
 }

@@ -72,8 +72,9 @@ type TestConfigurationResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// True when the settings work.
 	Ok bool `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	// Operator-facing result, or why the check failed and what to change.
-	// Never include secrets.
+	// Why the check failed and what to change, shown to the operator when ok
+	// is false. Hosts show their own success text when ok is true. Never
+	// include secrets.
 	Message       string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
