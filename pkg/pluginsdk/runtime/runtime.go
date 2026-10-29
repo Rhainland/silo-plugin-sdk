@@ -182,7 +182,7 @@ func (c *Client) NetworkIdentityAuth() pluginv1.NetworkIdentityAuthClient {
 }
 
 // ConfigurationChecks returns the client for the plugin-defined settings
-// check added in v0.31.0. Plugins that do not serve it answer Unimplemented.
+// check added in v0.32.0. Plugins that do not serve it answer Unimplemented.
 func (c *Client) ConfigurationChecks() pluginv1.ConfigurationChecksClient {
 	return pluginv1.NewConfigurationChecksClient(c.conn)
 }
